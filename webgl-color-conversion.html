@@ -1,0 +1,262 @@
+<html>
+<head>
+<script>
+// A class to perform color space conversion on a Uint8ClampedArray. The color
+// spaces are specified using 7-parameter transfer functions and a 3x3 matrix
+// to convert primaries.
+class WebGLColorConverter {
+  // Create a converter. The converter will convert batches of pixels of a
+  // specified width and height. The constructor parameters specify the
+  // maximum width and height that can be performed in one batch.
+  constructor(max_width, max_height) {
+    this.max_width = max_width;
+    this.max_height = max_height;
+    this.offscreen = new OffscreenCanvas(this.max_width, this.max_height);
+    this.gl = this.offscreen.getContext('webgl2');
+
+    this.tex = this.gl.createTexture();
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.tex);
+    this.gl.texImage2D(
+        this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.max_width, this.max_height, 0,
+        this.gl.RGBA, this.gl.UNSIGNED_BYTE, null);
+    this.gl.texParameteri(
+        this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, this.gl.LINEAR);
+    this.gl.texParameteri(
+        this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.CLAMP_TO_EDGE);
+    this.gl.texParameteri(
+        this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.CLAMP_TO_EDGE);
+    
+    const vs = `attribute vec2 a_position;
+                varying vec2 v_texcoord;
+                void main() {
+                  v_texcoord = (a_position + vec2(1.0, 1.0)) * 0.5;
+                  gl_Position = vec4(a_position, 0.0, 1.0);
+                }`;
+
+    const fs = `precision mediump float;
+                uniform sampler2D tex;
+                varying vec2 v_texcoord;
+                uniform float u_src_a, u_src_b, u_src_c, u_src_d, u_src_e, u_src_f, u_src_g;
+                uniform float u_dst_a, u_dst_b, u_dst_c, u_dst_d, u_dst_e, u_dst_f, u_dst_g;
+                uniform mat3 u_mat;
+
+                float toLinear(float x) {
+                  if (x < u_src_d)
+                    return u_src_c * x + u_src_f;
+                  return pow(u_src_a * x + u_src_b, u_src_g) + u_src_e;
+                }
+
+                float fromLinear(float x) {
+                  if (x < u_dst_d)
+                    return u_dst_c * x + u_dst_f;
+                  return pow(u_dst_a * x + u_dst_b, u_dst_g) + u_dst_e;
+                }
+
+                void main() {
+                  vec4 color = texture2D(tex, v_texcoord);
+                  color.r = toLinear(color.r);
+                  color.g = toLinear(color.g);
+                  color.b = toLinear(color.b);
+
+                  color.rgb = u_mat * color.rgb;
+
+                  color.r = fromLinear(color.r);
+                  color.g = fromLinear(color.g);
+                  color.b = fromLinear(color.b);
+                  gl_FragColor = color;
+                }`;
+
+    this.program = this.compileShader_(vs, fs);
+    this.gl.useProgram(this.program);
+
+    {
+      const vertices = [-1.0, -1.0,
+                        -1.0,  1.0,
+                         1.0,  1.0,
+
+                         1.0, -1.0,
+                        -1.0, -1.0,
+                        -1.0,  1.0];
+      this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.gl.createBuffer());
+      this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(vertices),
+                         this.gl.STATIC_DRAW);
+      const attrib_location = this.gl.getAttribLocation(
+          this.program, 'a_position');
+      this.gl.enableVertexAttribArray(attrib_location);
+      this.gl.vertexAttribPointer(
+          attrib_location, 2, this.gl.FLOAT, false, 0, 0);
+    }
+  }
+
+  // Configure the converter, with a 7-parameter source-to-linear transfer
+  // function, 3x3 source-to-destination matrix, and a 7-parameter linear-to-
+  // destination transfer function.
+  configure(src_to_linear, src_to_dst_matrix, dst_to_linear) {
+    this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'u_src_a'), src_to_linear[0]);
+    this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'u_src_b'), src_to_linear[1]);
+    this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'u_src_c'), src_to_linear[2]);
+    this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'u_src_d'), src_to_linear[3]);
+    this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'u_src_e'), src_to_linear[4]);
+    this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'u_src_f'), src_to_linear[5]);
+    this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'u_src_g'), src_to_linear[6]);
+
+    this.gl.uniformMatrix3fv(this.gl.getUniformLocation(this.program, 'u_mat'), this.gl.FALSE, src_to_dst_matrix);
+
+    this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'u_dst_a'), dst_to_linear[0]);
+    this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'u_dst_b'), dst_to_linear[1]);
+    this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'u_dst_c'), dst_to_linear[2]);
+    this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'u_dst_d'), dst_to_linear[3]);
+    this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'u_dst_e'), dst_to_linear[4]);
+    this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'u_dst_f'), dst_to_linear[5]);
+    this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'u_dst_g'), dst_to_linear[6]);
+  }
+Uint8ClampedArray
+  // Perform a conversion of a rectangle of the specified size. The input and
+  // output buffers must be Uint8ClampedArrays. The input and output buffers
+  // may be the same buffer.
+  convert(width, height, data_in, data_out) {
+    // Upload the new input data.
+    this.gl.texSubImage2D(
+        this.gl.TEXTURE_2D, 0, 0, 0, width, height,
+        this.gl.RGBA, this.gl.UNSIGNED_BYTE, data_in);
+
+    // Use the scissor rect to avoid reading and writing the full size of the
+    // buffer (and instead just read and write the requested size).
+    this.gl.scissor(0, 0, width, height);
+
+    // Draw a quad using the color conversion shader and the input data.
+    {
+      const primitive_type = this.gl.TRIANGLES;
+      const offset = 0;
+      const count = 6;
+      this.gl.drawArrays(primitive_type, offset, count);
+    }
+
+    // Read back the result from the framebuffer.
+    this.gl.readPixels(
+        0, 0, width, height, this.gl.RGBA, this.gl.UNSIGNED_BYTE, data_out);
+  }
+
+  // Helper function to compile a shader.
+  compileShader_(vertCode, fragCode) {
+    var vertShader = this.gl.createShader(this.gl.VERTEX_SHADER);
+    this.gl.shaderSource(vertShader, vertCode);
+    this.gl.compileShader(vertShader);
+       
+    var fragShader = this.gl.createShader(this.gl.FRAGMENT_SHADER);
+    this.gl.shaderSource(fragShader, fragCode); 
+    this.gl.compileShader(fragShader);
+    
+    var shaderProgram = this.gl.createProgram();
+    this.gl.attachShader(shaderProgram, vertShader);
+    this.gl.attachShader(shaderProgram, fragShader);
+    this.gl.linkProgram(shaderProgram);
+    return shaderProgram;
+  }
+}
+
+// This is our converter that will convert from sRGB to P3.
+var converter;
+
+// The canvas element and the canvas rendering context.
+var element;
+var canvas;
+
+// Pre-allocated buffers we'll be using for conversion.
+var data_in;
+var data_out;
+
+var t = 0;
+
+// This function will perform conversion and rendering. It will be called at
+// every requestAnimationFrame (usually 60 fps).
+function convertAndRender() {
+  // Update just the first pixel (this is testing the performance of converting,
+  // not populating the buffer).
+  data_in[0] = t;
+  t = (t + 1) % 256;
+
+  // Convert |data_in| in sRGB color space to |data_out| in Display P3 color
+  // space.
+  converter.convert(element.width, element.height, data_in, data_out);
+
+  // Wrap |data_out| in an ImageData, and draw it to our canvas. The pixel
+  // values in |data_out| have been converted to Display P3.
+  const image_data = new ImageData(data_out, element.width, element.height,
+                                   {colorSpace:'display-p3'});
+  canvas.putImageData(image_data, 0, 0);
+  requestAnimationFrame(convertAndRender);
+}
+
+function main() {
+  // Configure to convert from sRGB to Display P3. Set the maximum width and
+  // height that can be converted in a single call to 1024 (arbitrarily).
+  converter = new WebGLColorConverter(1024, 1024);
+  {
+    // sRGB to linear parameters
+    const src_to_linear = [0.947867345704, // a
+                           0.052132654296, // b
+                           0.077399380805, // c
+                           0.040449937172, // d
+                           0,              // e
+                           0,              // f
+                           2.4];           // g
+
+    // sRGB to P3 matrix
+    const src_to_dst_matrix = [ 8.22462135e-01, 3.31940344e-02, 1.70827069e-02, 
+                                1.77538111e-01, 9.66805726e-01,  7.23974339e-02,
+                               -1.86743409e-07, 6.14611596e-08,  9.10519996e-01];
+                               
+    // Linear to Display P3 parameters (same as linear to sRGB)
+    const linear_to_dst = [ 1.1371188301409823,   // a
+                            0.0,                  // b
+                           12.919999999992248,    // c
+                            0.003130800090713953, // d 
+                           -0.05499994754780801,  // e
+                            0.0,                  // f
+                            0.4166666666666667];  // g
+
+    // Configure |converter|.
+    converter.configure(src_to_linear, src_to_dst_matrix, linear_to_dst);
+  }
+
+  // Create the canvas we'll be rendering into.
+  element = document.getElementById('canvas');
+  canvas = element.getContext('2d', {colorSpace:'display-p3'});
+  const width = element.width;
+  const height = element.height;
+
+  // Pre-allocate the input and output buffers. Populate |data_in|.
+  data_in = new Uint8ClampedArray(4 * element.width * element.height);
+  data_out = new Uint8ClampedArray(4 * element.width * element.height);
+  for (var offset = 0; offset < element.width * element.height; ++offset) {
+    data_in[4*offset + 0] = 255;
+    data_in[4*offset + 1] =   0;
+    data_in[4*offset + 2] =   0;
+    data_in[4*offset + 3] = 255;
+  }
+
+  requestAnimationFrame(convertAndRender);
+}
+
+window.onload = main;
+</script>
+</head>
+<body>
+<h1>
+Sample code to convert between color spaces.
+</h1>
+<p>
+This page imports a Uint8ClampedArray into a WebGL texture, performs a color
+space conversion shader on that texture in a shader, and then reads the result
+back to another Uint8ClampedArray (in principle it could read to the same as the
+original).
+</p>
+<p>
+The page is animating with requestAnimationFrame (usually around 60 FPS).
+The only pixel that is changed is the top-left (it's strobing from black to red).
+</p>
+<p> <canvas id="canvas" width="256" height="256"></canvas> </p>
+</body>
+</html>
+
