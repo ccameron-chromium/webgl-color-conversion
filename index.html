@@ -74,9 +74,9 @@ class WebGLColorConverter {
                         -1.0,  1.0,
                          1.0,  1.0,
 
+                         1.0,  1.0,
                          1.0, -1.0,
-                        -1.0, -1.0,
-                        -1.0,  1.0];
+                        -1.0, -1.0];
       this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.gl.createBuffer());
       this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(vertices),
                          this.gl.STATIC_DRAW);
@@ -254,7 +254,9 @@ original).
 </p>
 <p>
 The page is animating with requestAnimationFrame (usually around 60 FPS).
-The only pixel that is changed is the top-left (it's strobing from black to red).
+The only pixel that is changed is the top-left (it's strobing from black to red),
+but the full 256x256 pixel canvas is being uploaded, converted, and downloaded
+at every frame.
 </p>
 <p> <canvas id="canvas" width="256" height="256"></canvas> </p>
 </body>
